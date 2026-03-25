@@ -1,26 +1,35 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+@theme {
+  --color-background: #020804;
+  --color-foreground: #ededed;
+  
+  --color-agri-dark: #06120b;
+  --color-agri-panel: #0a1f12;
+  --color-agri-green: #10b981;
+  --color-agri-neon: #34d399;
+  
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  --background: #020804;
+  --foreground: #ededed;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Glassmorphism utilities */
+.glass-panel {
+  @apply bg-agri-panel/60 backdrop-blur-md border border-white/5 rounded-xl shadow-xl;
+}
+
+.text-glow {
+  text-shadow: 0 0 10px rgba(52, 211, 153, 0.5);
 }
