@@ -1,52 +1,52 @@
 """
-AgriMind Multi-Agent System
+AgriMind Multi-Agent System.
 Single file with 3 agents (Prediction, Resource, Market), each with 1 tool,
-orchestrated by a LangGraph Supervisor.
+orchestrated by a LangGraph supervisor.
 """
 
-import os
 import json
+import os
+from contextvars import ContextVar
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
-
-# Load .env from the backend directory (or parent)
-load_dotenv()
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env'))
-
 from langchain_groq import ChatGroq
-from langgraph.prebuilt import create_react_agent
-from langgraph_supervisor import create_supervisor
 
-# ─── Transaction Log ─────────────────────────────────────────────────────────
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
-transaction_log = []
+
+transaction_log_var: ContextVar[list] = ContextVar("transaction_log", default=[])
+
 
 def log_transaction(agent: str, action: str, reasoning: str):
     """Record an agent transaction for documentation."""
-    transaction_log.append({
-        "agent": agent,
-        "action": action,
-        "reasoning": reasoning,
-        "timestamp": datetime.now().isoformat(),
-    })
+    current_log = list(transaction_log_var.get())
+    current_log.append(
+        {
+            "agent": agent,
+            "action": action,
+            "reasoning": reasoning,
+            "timestamp": datetime.now().isoformat(),
+        }
+    )
+    transaction_log_var.set(current_log)
 
-# ─── TOOL 1: Prediction Tool ─────────────────────────────────────────────────
 
 def prediction_tool(soil_data_json: str) -> str:
     """
     Analyze environmental data and generate forecasts for weather,
     pest outbreaks, irrigation needs, and harvest timing.
-    Input: JSON string with soil moisture, temperature, humidity, and pest data.
     """
     log_transaction(
         "Prediction Agent",
         "Analyzing environmental sensor data",
         "Received real soil data with appended humidity and pest readings. "
-        "Generating weather forecast, irrigation need, pest risk, and harvest timing."
+        "Generating weather forecast, irrigation need, pest risk, and harvest timing.",
     )
     return f"Environmental data received and analyzed: {soil_data_json}"
 
-# ─── TOOL 2: Resource Negotiation Tool ───────────────────────────────────────
 
 MOCK_FARMERS = [
     {"name": "Farm A - Ahmad Raza", "crop": "Wheat", "water_usage_liters": 1200, "equipment": ["Tractor", "Sprayer"], "location": "Faisalabad North"},
@@ -71,21 +71,19 @@ def resource_negotiation_tool(prediction_report: str) -> str:
     """
     Negotiate irrigation schedules, fertilizer distribution, and equipment sharing
     between farms based on the prediction report and regional farmer data.
-    Input: The prediction/forecast report as a string.
     """
     farmers_summary = json.dumps(MOCK_FARMERS, indent=2)
     log_transaction(
         "Resource Agent",
         "Negotiating resource allocation with 15 regional farms",
         "Using prediction forecasts to determine water needs, then negotiating "
-        "irrigation schedules and equipment sharing among neighboring farms."
+        "irrigation schedules and equipment sharing among neighboring farms.",
     )
     return (
         f"Prediction report received: {prediction_report}\n\n"
         f"Regional farmer data for negotiation:\n{farmers_summary}"
     )
 
-# ─── TOOL 3: Market Analysis Tool ────────────────────────────────────────────
 
 MOCK_MARKET_DATA = {
     "crops": {
@@ -110,185 +108,148 @@ def market_analysis_tool(resource_report: str) -> str:
     """
     Track crop prices and demand, recommend selling times, and connect farmers
     with buyers using current market data.
-    Input: The resource allocation report as a string.
     """
     market_summary = json.dumps(MOCK_MARKET_DATA, indent=2)
     log_transaction(
         "Market Agent",
         "Analyzing market conditions and buyer connections",
         "Evaluating current crop prices, demand trends, and optimal selling windows. "
-        "Matching farm output with potential buyers."
+        "Matching farm output with potential buyers.",
     )
     return (
         f"Resource report received: {resource_report}\n\n"
         f"Current market data:\n{market_summary}"
     )
 
-# ─── Lazy Initialization ─────────────────────────────────────────────────────
 
-_supervisor_app = None
+_llm = None
 
-def _get_supervisor():
-    """Lazily initialize the LLM, agents, and supervisor on first use."""
-    global _supervisor_app
-    if _supervisor_app is not None:
-        return _supervisor_app
 
-    llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
-        api_key=os.getenv("GROQ_API_KEY"),
+def _get_llm():
+    """Lazily initialize the Groq chat model."""
+    global _llm
+    if _llm is None:
+        _llm = ChatGroq(
+            model="llama-3.3-70b-versatile",
+            api_key=os.getenv("GROQ_API_KEY"),
+            temperature=0.2,
+        )
+    return _llm
+
+
+def _content_text(message) -> str:
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content)
+
+
+def _invoke_agent(system_prompt: str, user_prompt: str) -> str:
+    response = _get_llm().invoke(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
     )
+    return _content_text(response)
 
-    prediction_agent = create_react_agent(
-        model=llm,
-        tools=[prediction_tool],
-        name="prediction_agent",
-        prompt=(
-            "You are the Prediction Agent for AgriMind. Your job is to analyze environmental "
-            "sensor data and generate forecasts.\n\n"
-            "When you receive soil data, use your prediction_tool to analyze it. "
-            "Then provide a detailed report covering:\n"
-            "1. Weather Forecast (based on soil temperature trends)\n"
-            "2. Irrigation Need (does the farm need watering? YES/NO with explanation)\n"
-            "3. Pest Risk Level (based on humidity and temperature)\n"
-            "4. Harvest Timing (is it time to harvest or wait?)\n"
-            "5. Medicine/Treatment Needed (YES/NO with recommendation)\n\n"
-            "Be specific and actionable in your analysis. Use the actual sensor values."
-        ),
-    )
-
-    resource_agent = create_react_agent(
-        model=llm,
-        tools=[resource_negotiation_tool],
-        name="resource_agent",
-        prompt=(
-            "You are the Resource Allocation Agent for AgriMind. Your job is to negotiate "
-            "irrigation schedules, fertilizer distribution, and equipment sharing between farms.\n\n"
-            "When you receive a prediction report, use your resource_negotiation_tool to access "
-            "regional farmer data and create allocation plans.\n\n"
-            "Provide a detailed report covering:\n"
-            "1. Irrigation Schedule (which farms get water and when)\n"
-            "2. Fertilizer Distribution Plan (based on crop needs and predictions)\n"
-            "3. Equipment Sharing (who has available equipment and who needs it)\n\n"
-            "Be fair and practical in your negotiations. Consider each farm's needs."
-        ),
-    )
-
-    market_agent = create_react_agent(
-        model=llm,
-        tools=[market_analysis_tool],
-        name="market_agent",
-        prompt=(
-            "You are the Market Intelligence Agent for AgriMind. Your job is to track crop "
-            "prices, recommend selling times, and connect farmers with buyers.\n\n"
-            "When you receive a resource report, use your market_analysis_tool to access "
-            "current market data.\n\n"
-            "Provide a detailed report covering:\n"
-            "1. Current Market Prices (for relevant crops)\n"
-            "2. Selling Recommendation (SELL NOW / HOLD / WAIT with reasoning)\n"
-            "3. Buyer Connections (matched buyers with contact info)\n\n"
-            "Be strategic and data-driven in your recommendations."
-        ),
-    )
-
-    workflow = create_supervisor(
-        [prediction_agent, resource_agent, market_agent],
-        model=llm,
-        prompt=(
-            "You are the AgriMind Supervisor coordinating three specialized agents. "
-            "Follow this EXACT sequence:\n\n"
-            "1. FIRST: Send the soil/environmental data to prediction_agent for analysis\n"
-            "2. SECOND: Send prediction results to resource_agent for resource negotiation\n"
-            "3. THIRD: Send resource results to market_agent for market analysis\n\n"
-            "After all agents have reported, compile a FINAL SUMMARY in this EXACT JSON format "
-            "(output ONLY the JSON, no other text):\n"
-            "```json\n"
-            "{\n"
-            '  "weather_forecast": "brief forecast",\n'
-            '  "irrigation_needed": "YES/NO with brief reason",\n'
-            '  "pest_risk": "LOW/MEDIUM/HIGH with brief reason",\n'
-            '  "harvest_timing": "brief recommendation",\n'
-            '  "medicine_needed": "YES/NO with brief reason",\n'
-            '  "irrigation_schedule": "brief schedule summary",\n'
-            '  "fertilizer_plan": "brief plan",\n'
-            '  "equipment_sharing": "brief availability",\n'
-            '  "market_prices": "brief price summary",\n'
-            '  "selling_recommendation": "SELL/HOLD/WAIT with reason",\n'
-            '  "buyer_connections": "matched buyers"\n'
-            "}\n"
-            "```\n"
-        ),
-    )
-
-    _supervisor_app = workflow.compile()
-    return _supervisor_app
-
-# ─── Main Entry Point ────────────────────────────────────────────────────────
 
 def run_agents(soil_data: dict) -> dict:
     """
-    Run the multi-agent network with the given soil data.
-    Returns structured results + transaction log.
+    Run the agent pipeline with the given soil data.
+    Returns structured results plus a transaction log.
     """
-    global transaction_log
-    transaction_log = []  # Reset log for each run
+    transaction_log_var.set([])
 
-    # Append mock humidity and pest detection to real soil data
+    if not os.getenv("GROQ_API_KEY"):
+        raise RuntimeError("GROQ_API_KEY is not configured")
+
     enriched_data = {
         **soil_data,
         "humidity_percent": 65.2,
         "pest_detection": "Aphid activity: LOW, Whitefly: NONE, Bollworm: TRACE",
     }
 
-    user_message = (
-        f"New farm sensor data received. Run a complete analysis.\n\n"
-        f"LIVE SOIL SENSOR DATA (from Agromonitoring API):\n"
-        f"- Soil Moisture: {soil_data.get('moisture', 'N/A')}%\n"
-        f"- Surface Temperature: {soil_data.get('surfaceTemp', 'N/A')}°C\n"
-        f"- Depth Temperature (10cm): {soil_data.get('depthTemp', 'N/A')}°C\n"
-        f"- Reading Timestamp: {soil_data.get('timestamp', 'N/A')}\n"
-        f"- Humidity: {enriched_data['humidity_percent']}%\n"
-        f"- Pest Detection: {enriched_data['pest_detection']}\n\n"
-        f"Full data JSON: {json.dumps(enriched_data)}\n\n"
-        f"Run all three agents in sequence: Prediction → Resource → Market, "
-        f"then compile the final JSON summary."
+    sensor_summary = (
+        f"Moisture {soil_data.get('moisture', 'N/A')}%, "
+        f"surface temp {soil_data.get('surfaceTemp', 'N/A')} deg C, "
+        f"10cm temp {soil_data.get('depthTemp', 'N/A')} deg C, "
+        f"humidity {enriched_data['humidity_percent']}%, "
+        f"pest scan: {enriched_data['pest_detection']}."
     )
 
-    # Get or create the supervisor
-    supervisor = _get_supervisor()
+    prediction_tool(json.dumps(enriched_data))
+    prediction_report = _invoke_agent(
+        "You are the AgriMind Prediction Agent. Be concise and practical.",
+        (
+            f"Analyze this farm reading: {sensor_summary}\n"
+            "Return 5 short lines: weather forecast, irrigation need, pest risk, "
+            "harvest timing, and treatment needed."
+        ),
+    )
 
-    # Run the supervisor
-    result = supervisor.invoke({
-        "messages": [{"role": "user", "content": user_message}]
-    })
+    selected_farmers = MOCK_FARMERS[:5]
+    resource_negotiation_tool(prediction_report)
+    resource_report = _invoke_agent(
+        "You are the AgriMind Resource Agent. Be concise and practical.",
+        (
+            f"Prediction report:\n{prediction_report}\n\n"
+            f"Nearby farms JSON: {json.dumps(selected_farmers)}\n"
+            "Return 3 short lines: irrigation schedule, fertilizer plan, equipment sharing."
+        ),
+    )
 
-    # Extract the final message from the supervisor
-    final_message = ""
-    if result and "messages" in result:
-        for msg in reversed(result["messages"]):
-            if hasattr(msg, "content") and msg.content:
-                final_message = msg.content
-                break
+    market_analysis_tool(resource_report)
+    market_report = _invoke_agent(
+        "You are the AgriMind Market Agent. Be concise and practical.",
+        (
+            f"Resource report:\n{resource_report}\n\n"
+            f"Market JSON: {json.dumps(MOCK_MARKET_DATA)}\n"
+            "Return 3 short lines: prices, sell/hold/wait recommendation, buyer connections."
+        ),
+    )
 
-    # Try to parse the structured JSON from the supervisor's response
-    structured_result = parse_supervisor_response(final_message)
-    structured_result["transaction_log"] = transaction_log
+    final_message = _invoke_agent(
+        "You compile AgriMind agent outputs. Output only valid JSON with no markdown.",
+        (
+            "Create exactly this JSON object with string values: "
+            "weather_forecast, irrigation_needed, pest_risk, harvest_timing, "
+            "medicine_needed, irrigation_schedule, fertilizer_plan, equipment_sharing, "
+            "market_prices, selling_recommendation, buyer_connections.\n\n"
+            f"Prediction:\n{prediction_report}\n\n"
+            f"Resource:\n{resource_report}\n\n"
+            f"Market:\n{market_report}"
+        ),
+    )
 
+    structured_result = parse_agent_response(final_message)
+    structured_result["transaction_log"] = transaction_log_var.get()
     return structured_result
 
 
-def parse_supervisor_response(response: str) -> dict:
-    """Parse the supervisor's JSON response. Falls back to raw text if parsing fails."""
+def parse_agent_response(response: str) -> dict:
+    """Parse the final JSON response. Fall back to raw text if parsing fails."""
     default_keys = [
-        "weather_forecast", "irrigation_needed", "pest_risk",
-        "harvest_timing", "medicine_needed", "irrigation_schedule",
-        "fertilizer_plan", "equipment_sharing", "market_prices",
-        "selling_recommendation", "buyer_connections",
+        "weather_forecast",
+        "irrigation_needed",
+        "pest_risk",
+        "harvest_timing",
+        "medicine_needed",
+        "irrigation_schedule",
+        "fertilizer_plan",
+        "equipment_sharing",
+        "market_prices",
+        "selling_recommendation",
+        "buyer_connections",
     ]
 
-    # Try to find JSON in the response
     try:
-        # Look for JSON block in markdown code fence
         if "```json" in response:
             json_str = response.split("```json")[1].split("```")[0].strip()
         elif "```" in response:
@@ -302,7 +263,6 @@ def parse_supervisor_response(response: str) -> dict:
 
         if json_str:
             parsed = json.loads(json_str)
-            # Ensure all expected keys exist
             for key in default_keys:
                 if key not in parsed:
                     parsed[key] = "Analysis pending"
@@ -310,7 +270,6 @@ def parse_supervisor_response(response: str) -> dict:
     except (json.JSONDecodeError, ValueError, IndexError):
         pass
 
-    # Fallback: return raw response in a structured format
     return {key: "See raw analysis below" for key in default_keys} | {
         "raw_analysis": response,
     }
